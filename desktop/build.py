@@ -1,8 +1,10 @@
 """Run on the target OS using the application's virtual environment."""
+import os
 import subprocess
 import sys
 from pathlib import Path
 root = Path(__file__).resolve().parent
+os.environ.setdefault('PYINSTALLER_CONFIG_DIR', str(root.parent/'build'/'pyinstaller-cache'))
 args = [sys.executable, '-m', 'PyInstaller', '--noconfirm', '--windowed',
         '--name', 'Callnote', '--collect-all', 'faster_whisper',
         '--collect-all', 'ctranslate2', '--collect-all', 'tokenizers',
