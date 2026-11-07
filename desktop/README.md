@@ -1,6 +1,6 @@
 # Callnote Desktop — ранняя версия
 
-Исходный код настольного приложения для Windows и macOS. Python 3.11 рекомендуем для обеих платформ. Сборка macOS Apple Silicon доступна в `dist/Callnote.app` и `dist/Callnote-macOS-AppleSilicon.zip`. Windows и Intel Mac пока не собраны. Проверена на macOS 27.2; совместимость с более ранними версиями не проверена.
+Исходный код настольного приложения для Windows и macOS. Python 3.11 рекомендуем для обеих платформ. Сборка macOS Apple Silicon доступна в `dist/Callnote.app` и `dist/Callnote-macOS-AppleSilicon.zip`. Windows x64 собрана через GitHub Actions; Intel Mac пока не собран. Проверена на macOS 27.2; совместимость с более ранними версиями не проверена.
 
 ## Запуск на macOS
 
@@ -47,4 +47,4 @@ python desktop/build.py
 
 Для GitHub Actions загрузите проект в свой репозиторий, откройте Actions → Build Callnote for Windows → Run workflow. После успешного выполнения скачайте артефакт Callnote-Windows-x64. Workflow запускается вручную или при отправке тега `windows-*`, не публикует релиз и не подписывает EXE. Для запуска из чата требуется доступ к вашему репозиторию.
 
-Windows-сборка ещё не выполнена: на текущем Mac нет Windows runner, а удалённый репозиторий не настроен. Скрипт проверки подтверждает только отсутствие сбоя при запуске; работа микрофона и качество распознавания проверяются отдельно.
+Windows x64 успешно собрана: https://github.com/c3alex/-allnote/actions/runs/42403620216. В разделе Artifacts скачайте Callnote-Windows-x64 (142 МБ); для скачивания требуется вход в GitHub. Артефакт хранится 14 дней. Распакуйте внешний архив, затем вложенный Callnote-Windows-x64.zip и запустите Callnote/Callnote.exe. Скрипт проверки подтверждает только отсутствие сбоя при запуске; работа микрофона и качество распознавания проверяются отдельно.

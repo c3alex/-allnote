@@ -25,3 +25,7 @@
 ## Подготовка Windows x64
 
 Добавлены Build-Windows.cmd, desktop/build_windows.py и ручной workflow GitHub Actions на windows-2022. Проверены синтаксис Python, структура YAML и отказ запуска Windows-сборки на macOS. Реальная Windows-сборка и её проверка пока не выполнены: Windows runner и Git remote недоступны. ZIP с исходниками не является готовым Windows-приложением.
+
+## Windows x64: сборка завершена
+
+2026-11-07 workflow https://github.com/c3alex/-allnote/actions/runs/42403620216 завершился Success за 2 минуты 15 секунд, исходный коммит e11db6c, тег windows-0.1.0. Установка зависимостей, сборка PyInstaller, 10-секундная проверка запуска EXE в offscreen-режиме и создание архива выполнены на windows-2022. Артефакт Callnote-Windows-x64: 142 МБ, SHA256 внешнего артефакта 48ab9b775c122455210bc2e2018440c1bb6699419678abea6145e5306081cc03. Проверки микрофона и распознавания речи на Windows не проводились. EXE не подписан сертификатом издателя.
