@@ -21,3 +21,7 @@
 - `codesign --verify --deep --strict` завершился успешно (локальная ad-hoc подпись).
 - Не проверены визуальный интерфейс, физический микрофон, точность RU/EN, Windows и Intel Mac. Qt сообщил предупреждения о свойствах аудиоустройства в тестовом окружении.
 - macOS-пакет и ZIP находятся в dist, бинарные файлы исключены из Git. Набор установленных версий зафиксирован в desktop/requirements-macos-arm64.lock.
+
+## Подготовка Windows x64
+
+Добавлены Build-Windows.cmd, desktop/build_windows.py и ручной workflow GitHub Actions на windows-2022. Проверены синтаксис Python, структура YAML и отказ запуска Windows-сборки на macOS. Реальная Windows-сборка и её проверка пока не выполнены: Windows runner и Git remote недоступны. ZIP с исходниками не является готовым Windows-приложением.

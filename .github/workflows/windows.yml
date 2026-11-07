@@ -1,0 +1,26 @@
+name: Build Callnote for Windows
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          architecture: x64
+      - name: Install, build, check and archive
+        run: python desktop/build_windows.py
+      - name: Upload Windows package
+        uses: actions/upload-artifact@v4
+        with:
+          name: Callnote-Windows-x64
+          path: |
+            dist/Callnote-Windows-x64.zip
+            dist/requirements-windows-resolved.txt
+          if-no-files-found: error
+          retention-days: 14

@@ -6,3 +6,4 @@ dist/
 *.spec
 .DS_Store
 *.log
+.venv-windows/
