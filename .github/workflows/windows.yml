@@ -1,6 +1,9 @@
 name: Build Callnote for Windows
 on:
   workflow_dispatch:
+  push:
+    tags:
+      - "windows-*"
 permissions:
   contents: read
 jobs:
