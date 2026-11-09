@@ -1,0 +1,30 @@
+{
+  "budget_seconds": 15.0,
+  "mode": "offscreen",
+  "fresh_profile_each_run": true,
+  "os_disk_cache_cleared": false,
+  "runs": [
+    {
+      "phase": "first_paint_and_event_loop",
+      "total_ms": 5353.421084,
+      "python_ms": 781.600667,
+      "heavy_modules": [],
+      "run": 1
+    },
+    {
+      "phase": "first_paint_and_event_loop",
+      "total_ms": 573.207709,
+      "python_ms": 378.167625,
+      "heavy_modules": [],
+      "run": 2
+    },
+    {
+      "phase": "first_paint_and_event_loop",
+      "total_ms": 478.818042,
+      "python_ms": 326.025667,
+      "heavy_modules": [],
+      "run": 3
+    }
+  ],
+  "passed": true
+}
