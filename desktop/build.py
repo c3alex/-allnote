@@ -20,7 +20,7 @@ if sys.platform=='darwin':
     import plistlib
     bundle=root.parent/'dist'/'Callnote.app';path=bundle/'Contents'/'Info.plist'
     data=plistlib.loads(path.read_bytes())
-    data.update(CFBundleShortVersionString='0.2.0',CFBundleVersion='2',LSMinimumSystemVersion='14.4',
+    data.update(CFBundleShortVersionString='0.2.1',CFBundleVersion='3',LSMinimumSystemVersion='14.4',
         NSMicrophoneUsageDescription='Callnote записывает ваш голос для локальной расшифровки встречи.',
         NSScreenCaptureUsageDescription='Callnote записывает системный звук звонков и приложений для локальной расшифровки.')
     path.write_bytes(plistlib.dumps(data))

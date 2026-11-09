@@ -1,17 +1,23 @@
-"""Callnote 0.2 — macOS desktop recorder and local transcription."""
+"""Callnote 0.2.1 — macOS desktop recorder and local transcription."""
 import time
 PYTHON_ENTRY_NS = time.perf_counter_ns()
 import json
 import os
 from pathlib import Path
 import sys
+# A model job must exit before importing any Qt widgets or creating windows.
+if __name__ == '__main__' and len(sys.argv) == 3 and sys.argv[1] == '--model-job':
+    if sys.stdout is None:sys.stdout=open(1,'w',encoding='utf-8',buffering=1,closefd=False)
+    if sys.stderr is None:sys.stderr=open(2,'w',encoding='utf-8',buffering=1,closefd=False)
+    from model_job import main as run_model_job
+    sys.exit(run_model_job(sys.argv[2]))
 from datetime import datetime
 from PySide6.QtCore import Qt,QTimer,QDateTime,QUrl,QSignalBlocker
 from PySide6.QtGui import QColor,QDesktopServices,QKeySequence
 from PySide6.QtWidgets import (QApplication,QMainWindow,QWidget,QDialog,QVBoxLayout,QHBoxLayout,
     QGridLayout,QPushButton,QLabel,QComboBox,QFileDialog,QMessageBox,QTableWidget,QTableWidgetItem,
     QHeaderView,QSlider,QCheckBox,QDateTimeEdit,QTextEdit,QLineEdit,QProgressBar,QListWidget,
-    QListWidgetItem,QKeySequenceEdit,QSplitter,QFrame)
+    QListWidgetItem,QKeySequenceEdit,QSplitter,QFrame,QStackedWidget)
 from core import app_data,atomic_json,stamp,export_text,validate_project
 from engine import SessionWorker,helper_path
 from models import ModelTask,CATALOG,installed
@@ -37,10 +43,10 @@ def button(text,callback,primary=False):
 def note(text):
     label=QLabel(text);label.setWordWrap(True);label.setStyleSheet('color:#788675;font-size:11px');return label
 
-class ModelDialog(QDialog):
+class ModelPage(QWidget):
     def __init__(self,parent):
-        super().__init__(parent);self.setWindowTitle('Модели · Callnote');self.resize(690,600);self.task=None;self.metadata=None
-        layout=QVBoxLayout(self);layout.setSpacing(14)
+        super().__init__(parent);self.owner=parent;self.task=None;self.metadata=None;self.last_request=None
+        layout=QVBoxLayout(self);layout.setContentsMargins(28,28,28,24);layout.setSpacing(14)
         title=QLabel('Модели под вашу задачу');title.setStyleSheet('font-size:23px;font-weight:600');layout.addWidget(title)
         layout.addWidget(note('Многоязычные Whisper в формате CTranslate2. После загрузки работают без интернета.'))
         row=QHBoxLayout();layout.addLayout(row)
@@ -53,6 +59,7 @@ class ModelDialog(QDialog):
         self.inspect=button('Проверить модель',self.inspect_model);controls.addWidget(self.inspect)
         self.download=button('Скачать',self.download_model,True);self.download.setEnabled(False);controls.addWidget(self.download)
         self.cancel=button('Отменить',self.cancel_task);self.cancel.setEnabled(False);controls.addWidget(self.cancel)
+        self.retry=button('Повторить',self.retry_task);self.retry.setEnabled(False);controls.addWidget(self.retry)
         self.info=note('Проверка покажет размер, лицензию и совместимость файлов.');layout.addWidget(self.info)
         self.progress=QProgressBar();self.progress.setRange(0,100);layout.addWidget(self.progress)
         layout.addWidget(QLabel('Установленные модели'));self.list=QListWidget();layout.addWidget(self.list)
@@ -60,20 +67,25 @@ class ModelDialog(QDialog):
         self.import_button=button('Импорт папки',self.import_model);row.addWidget(self.import_button)
         self.export_button=button('Экспорт папки',self.export_model);row.addWidget(self.export_button)
         self.choose=button('Использовать',self.use_model,True);row.addWidget(self.choose)
-        layout.addWidget(note('Файлы моделей не исполняются. Произвольные GGUF и PyTorch требуют другого адаптера. Закрытие окна во время загрузки сначала требует отмены.'))
+        layout.addWidget(note('Файлы моделей не исполняются. Произвольные GGUF и PyTorch требуют другого адаптера. Во время загрузки можно переходить между разделами. Отмена сохраняет скачанную часть.'))
         self.refresh()
     def refresh(self):
         self.list.clear()
         for path in installed():
             item=QListWidgetItem(path.name);item.setData(Qt.UserRole,str(path));self.list.addItem(item)
         if self.list.count():self.list.setCurrentRow(0)
-    def invalidate(self):self.metadata=None;self.download.setEnabled(False)
+    def invalidate(self):
+        self.metadata=None;self.last_request=None;self.download.setEnabled(False)
+        if hasattr(self,'retry'):self.retry.setEnabled(False)
     def launch(self,task):
         if self.task and self.task.isRunning():return
-        self.task=task;self.progress.setValue(0)
+        if self.task:self.task.deleteLater()
+        self.task=task;self.last_request=(task.operation,task.value,task.destination,task.metadata)
+        self.progress.setRange(0,0) if task.operation=='inspect' else self.progress.setRange(0,100)
+        self.progress.setValue(0);self.retry.setEnabled(False)
         for control in [self.inspect,self.download,self.import_button,self.export_button,self.choose,self.repo,self.catalog]:control.setEnabled(False)
         self.cancel.setEnabled(True);task.status.connect(self.info.setText);task.progress.connect(self.progress.setValue)
-        task.result.connect(self.result);task.failed.connect(self.info.setText);task.finished.connect(self.finished);task.start()
+        task.result.connect(self.result);task.failed.connect(self.failure);task.finished.connect(self.finished);task.start()
     def inspect_model(self):self.info.setText('Проверка репозитория…');self.launch(ModelTask('inspect',self.repo.text(),parent=self))
     def download_model(self):
         if self.metadata:self.launch(ModelTask('download',self.repo.text(),metadata=self.metadata,parent=self))
@@ -87,23 +99,26 @@ class ModelDialog(QDialog):
         if path:self.launch(ModelTask('export',item.data(Qt.UserRole),destination=path,parent=self))
     def use_model(self):
         item=self.list.currentItem()
-        if item:self.parent().refresh_models(item.data(Qt.UserRole));self.accept()
+        if item:self.owner.refresh_models(item.data(Qt.UserRole));self.owner.show_main()
     def result(self,data):
         if 'repo' in data:
             self.metadata=data;self.info.setText(f"Совместимые файлы найдены · {data['size']/1024/1024:.0f} МБ · лицензия: {data['license']}\n{data['repo']}")
         else:
-            self.info.setText('Готово: '+data['path']);self.refresh();self.parent().refresh_models(data['path'])
+            self.info.setText('Готово: '+Path(data['path']).name);self.refresh()
+            if self.task.operation!='export':self.owner.refresh_models(data['path'])
     def finished(self):
+        self.progress.setRange(0,100)
         for control in [self.inspect,self.import_button,self.export_button,self.choose,self.repo,self.catalog]:control.setEnabled(True)
         self.download.setEnabled(self.metadata is not None);self.cancel.setEnabled(False)
+    def failure(self,text):
+        self.info.setText(text);self.retry.setEnabled(True)
+    def retry_task(self):
+        if self.last_request:
+            op,value,destination,metadata=self.last_request
+            self.info.setText('Повторная попытка…')
+            self.launch(ModelTask(op,value,destination=destination,metadata=metadata,parent=self))
     def cancel_task(self):
-        if self.task:self.task.cancelled.set();self.info.setText('Отмена после текущего сетевого ответа…')
-    def closeEvent(self,event):
-        if self.task and self.task.isRunning():self.cancel_task();event.ignore()
-        else:event.accept()
-    def reject(self):
-        if self.task and self.task.isRunning():self.cancel_task()
-        else:super().reject()
+        if self.task:self.task.cancel()
 
 class FloatingWindow(QWidget):
     def __init__(self,owner):
@@ -122,16 +137,16 @@ class FloatingWindow(QWidget):
 class Window(QMainWindow):
     def __init__(self):
         super().__init__();self.setWindowTitle('Callnote');self.resize(1210,800);self.setMinimumSize(950,640)
-        self.rows=[];self.audio_path='';self.worker=None;self.session_folder=None;self.active=False;self.record_started=None;self.loading=False;self.dirty=False;self.model_dialog=None
+        self.rows=[];self.audio_path='';self.worker=None;self.session_folder=None;self.active=False;self.record_started=None;self.loading=False;self.dirty=False;self.model_page=None
         self.settings={}
         try:self.settings=json.loads((app_data()/'settings.json').read_text())
         except (OSError,ValueError):pass
         root=QWidget();self.setCentralWidget(root);outer=QHBoxLayout(root);outer.setContentsMargins(0,0,0,0);outer.setSpacing(0)
         sidebar=QWidget();sidebar.setFixedWidth(185);sidebar.setStyleSheet('background:#edf1e9');nav=QVBoxLayout(sidebar);nav.setContentsMargins(20,30,20,22);nav.setSpacing(14)
         brand=QLabel('≋ callnote.');brand.setStyleSheet('font-size:24px;font-weight:700');nav.addWidget(brand);nav.addSpacing(22)
-        nav.addWidget(button('Текущая встреча',self.show_main));self.models_button=button('Модели',self.models);nav.addWidget(self.models_button)
-        nav.addWidget(button('Горячие клавиши',self.shortcuts));nav.addWidget(button('Доступ к звуку',self.permissions));nav.addStretch();nav.addWidget(note('Локальное распознавание\nАудио остаётся на Mac\nВерсия 0.2'))
-        outer.addWidget(sidebar);body=QWidget();layout=QVBoxLayout(body);layout.setContentsMargins(28,28,28,20);layout.setSpacing(16);outer.addWidget(body,1)
+        self.meeting_button=button('Текущая встреча',self.show_main);nav.addWidget(self.meeting_button);self.models_button=button('Модели',self.models);nav.addWidget(self.models_button)
+        self.keys_button=button('Горячие клавиши',self.shortcuts);nav.addWidget(self.keys_button);self.audio_button=button('Доступ к звуку',self.permissions);nav.addWidget(self.audio_button);nav.addStretch();nav.addWidget(note('Локальное распознавание\nАудио остаётся на Mac\nВерсия 0.2.1'))
+        outer.addWidget(sidebar);body=QWidget();layout=QVBoxLayout(body);layout.setContentsMargins(28,28,28,20);layout.setSpacing(16);self.pages=QStackedWidget();self.pages.addWidget(body);outer.addWidget(self.pages,1);self.meeting_page=body;self.shortcut_page=None;self.audio_page=None
         row=QHBoxLayout();layout.addLayout(row);heading=QLabel('Разговор становится текстом.');heading.setStyleSheet('font-size:25px;font-weight:650');row.addWidget(heading);row.addStretch();row.addWidget(button('↗ Компактное окно',self.show_floating))
         self.file_label=note('Новая встреча · выберите источник и локальную модель');layout.addWidget(self.file_label)
         row=QHBoxLayout();layout.addLayout(row);self.source=QComboBox();self.source.addItem('Системный звук + микрофон','both');self.source.addItem('Только системный звук','system');self.source.addItem('Только микрофон','mic');row.addWidget(self.source,1)
@@ -192,39 +207,53 @@ class Window(QMainWindow):
         idx=self.model.findData(previous)
         if idx>=0:self.model.setCurrentIndex(idx)
         if not self.model.count():self.model.addItem('Модель не установлена',None)
+    def select_page(self,page,button_widget):
+        self.pages.setCurrentWidget(page)
+        for nav_button in [self.meeting_button,self.models_button,self.keys_button,self.audio_button]:
+            nav_button.setProperty('primary',nav_button is button_widget)
+            nav_button.style().unpolish(nav_button);nav_button.style().polish(nav_button)
+        self.showNormal();self.raise_()
     def models(self):
-        if self.active:return
-        if not self.model_dialog:self.model_dialog=ModelDialog(self)
-        self.model_dialog.refresh();self.model_dialog.show();self.model_dialog.raise_()
-    def show_main(self):self.showNormal();self.raise_();self.activateWindow()
+        if not self.model_page:
+            self.model_page=ModelPage(self);self.pages.addWidget(self.model_page)
+        self.model_page.refresh();self.select_page(self.model_page,self.models_button)
+    def show_main(self):
+        self.select_page(self.meeting_page,self.meeting_button);self.activateWindow()
     def show_floating(self):self.mini.show();self.mini.raise_()
     def hotkey(self,name):
         if name=='record':self.toggle_record()
         elif name=='copy':self.copy()
         elif name=='floating':self.mini.setVisible(not self.mini.isVisible())
     def shortcuts(self):
-        dialog=QDialog(self);dialog.setWindowTitle('Горячие клавиши');layout=QVBoxLayout(dialog);editors={}
-        for name,title in [('record','Запись / остановка'),('copy','Копировать текст'),('floating','Компактное окно')]:
-            layout.addWidget(QLabel(title));edit=QKeySequenceEdit(QKeySequence(self.keymap.get(name,DEFAULTS[name])));layout.addWidget(edit);editors[name]=edit
-        error=note('Сочетания работают при фокусе другого приложения на macOS.');layout.addWidget(error)
+        if self.shortcut_page:
+            self.select_page(self.shortcut_page,self.keys_button);return
+        page=QWidget();self.shortcut_page=page;layout=QVBoxLayout(page);layout.setContentsMargins(28,28,28,24);layout.setSpacing(16)
+        title=QLabel('Горячие клавиши');title.setStyleSheet('font-size:24px;font-weight:600');layout.addWidget(title);editors={}
+        for name,label in [('record','Запись / остановка'),('copy','Копировать текст'),('floating','Компактное окно')]:
+            layout.addWidget(QLabel(label));edit=QKeySequenceEdit(QKeySequence(self.keymap.get(name,DEFAULTS[name])));layout.addWidget(edit);editors[name]=edit
+        message=note('Сочетания работают при фокусе другого приложения на macOS.');layout.addWidget(message)
         def save():
             mapping={name:edit.keySequence().toString(QKeySequence.PortableText) for name,edit in editors.items()}
             try:
                 if self.hotkeys:self.hotkeys.register(mapping)
-                self.keymap=mapping;self.save_settings();dialog.accept()
+                self.keymap=mapping;self.save_settings();message.setText('Сочетания сохранены.')
             except Exception as exc:
                 try:
                     if self.hotkeys:self.hotkeys.register(self.keymap)
                 except Exception:pass
-                error.setText(str(exc))
-        layout.addWidget(button('Сохранить',save,True));dialog.exec()
+                message.setText(str(exc))
+        layout.addWidget(button('Сохранить',save,True));layout.addStretch()
+        self.pages.addWidget(page);self.select_page(page,self.keys_button)
     def permissions(self):
-        dialog=QDialog(self);dialog.setWindowTitle('Доступ к звуку');layout=QVBoxLayout(dialog)
+        if self.audio_page:
+            self.select_page(self.audio_page,self.audio_button);return
+        page=QWidget();self.audio_page=page;layout=QVBoxLayout(page);layout.setContentsMargins(28,28,28,24);layout.setSpacing(18)
+        title=QLabel('Доступ к звуку');title.setStyleSheet('font-size:24px;font-weight:600');layout.addWidget(title)
         layout.addWidget(note('Для системного звука macOS запрашивает доступ к записи экрана/системного аудио. Для вашего голоса нужен отдельный доступ к микрофону. Запрос появится при старте записи. После изменения доступа может потребоваться перезапуск Callnote.'))
         for title,url in [('Открыть доступ к системному звуку','x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture'),('Открыть доступ к микрофону','x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone')]:
             layout.addWidget(button(title,lambda checked=False,u=url:QDesktopServices.openUrl(QUrl(u))))
-        layout.addWidget(note('Захватывается системный аудиомикс. Защищённый звук может быть недоступен. При смене устройства проверьте индикаторы; при пропадании сигнала остановите и начните запись заново.'))
-        layout.addWidget(button('Готово',dialog.accept));dialog.exec()
+        layout.addWidget(note('Разрешения меняются в системных настройках macOS. При смене устройства проверьте индикаторы; при пропадании сигнала остановите и начните запись заново.'))
+        layout.addStretch();self.pages.addWidget(page);self.select_page(page,self.audio_button)
     def ensure_player(self):
         if self.player is not None:return
         # Device discovery and FFmpeg load only when audio is opened.
@@ -252,7 +281,7 @@ class Window(QMainWindow):
         else:self.status.setText('Сначала откройте аудиофайл.')
     def begin(self,path):
         if self.active:return
-        if self.model_dialog and self.model_dialog.task and self.model_dialog.task.isRunning():self.status.setText('Дождитесь загрузки модели.');return
+        if self.model_page and self.model_page.task and self.model_page.task.isRunning():self.status.setText('Дождитесь загрузки модели.');return
         model=self.model.currentData()
         if not model:self.models();return
         if self.rows and QMessageBox.question(self,'Новая расшифровка','Заменить текущую расшифровку? Сохраните проект, если хотите вернуться к нему.',QMessageBox.Yes|QMessageBox.No)!=QMessageBox.Yes:return
@@ -359,8 +388,8 @@ class Window(QMainWindow):
     def closeEvent(self,event):
         if self.active:
             self.stop_worker();self.status.setText('Дождитесь завершения обработки или отмените её.');event.ignore();return
-        if self.model_dialog and self.model_dialog.task and self.model_dialog.task.isRunning():
-            self.model_dialog.cancel_task();self.model_dialog.show();event.ignore();return
+        if self.model_page and self.model_page.task and self.model_page.task.isRunning():
+            self.model_page.task.finished.connect(self.close);self.model_page.cancel_task();event.ignore();return
         self.save_recovery();self.save_settings();self.mini.hide()
         if self.hotkeys:self.hotkeys.close()
         event.accept()

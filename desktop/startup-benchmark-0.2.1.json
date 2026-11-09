@@ -1,0 +1,16 @@
+{
+  "budget_seconds": 15.0,
+  "mode": "offscreen",
+  "fresh_profile_each_run": true,
+  "os_disk_cache_cleared": false,
+  "runs": [
+    {
+      "phase": "first_paint_and_event_loop",
+      "total_ms": 3386.832833,
+      "python_ms": 643.682125,
+      "heavy_modules": [],
+      "run": 1
+    }
+  ],
+  "passed": true
+}
