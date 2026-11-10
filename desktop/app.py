@@ -1,4 +1,4 @@
-"""Callnote 0.2.2 — macOS desktop recorder and local transcription."""
+"""Callnote 0.2.3 — macOS desktop recorder and local transcription."""
 import time
 PYTHON_ENTRY_NS = time.perf_counter_ns()
 import json
@@ -145,7 +145,7 @@ class Window(QMainWindow):
         sidebar=QWidget();sidebar.setFixedWidth(185);sidebar.setStyleSheet('background:#edf1e9');nav=QVBoxLayout(sidebar);nav.setContentsMargins(20,30,20,22);nav.setSpacing(14)
         brand=QLabel('≋ callnote.');brand.setStyleSheet('font-size:24px;font-weight:700');nav.addWidget(brand);nav.addSpacing(22)
         self.meeting_button=button('Текущая встреча',self.show_main);nav.addWidget(self.meeting_button);self.models_button=button('Модели',self.models);nav.addWidget(self.models_button)
-        self.keys_button=button('Горячие клавиши',self.shortcuts);nav.addWidget(self.keys_button);self.audio_button=button('Доступ к звуку',self.permissions);nav.addWidget(self.audio_button);nav.addStretch();nav.addWidget(note('Локальное распознавание\nАудио остаётся на Mac\nВерсия 0.2.2'))
+        self.keys_button=button('Горячие клавиши',self.shortcuts);nav.addWidget(self.keys_button);self.audio_button=button('Доступ к звуку',self.permissions);nav.addWidget(self.audio_button);nav.addStretch();nav.addWidget(note('Локальное распознавание\nАудио остаётся на Mac\nВерсия 0.2.3'))
         outer.addWidget(sidebar);body=QWidget();layout=QVBoxLayout(body);layout.setContentsMargins(28,28,28,20);layout.setSpacing(16);self.pages=QStackedWidget();self.pages.addWidget(body);outer.addWidget(self.pages,1);self.meeting_page=body;self.shortcut_page=None;self.audio_page=None
         row=QHBoxLayout();layout.addLayout(row);heading=QLabel('Разговор становится текстом.');heading.setStyleSheet('font-size:25px;font-weight:650');row.addWidget(heading);row.addStretch();row.addWidget(button('↗ Компактное окно',self.show_floating))
         self.file_label=note('Новая встреча · выберите источник и локальную модель');layout.addWidget(self.file_label)

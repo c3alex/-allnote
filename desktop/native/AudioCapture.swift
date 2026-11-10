@@ -114,12 +114,6 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
             if !granted { throw NSError(domain:"Callnote.AudioCapture", code:1, userInfo:[NSLocalizedDescriptionKey:"Нет доступа к микрофону. Разрешите Callnote доступ в настройках macOS."]) }
         }
         if mode != "mic" {
-            guard CGPreflightScreenCaptureAccess() else {
-                CGRequestScreenCaptureAccess()
-                throw NSError(domain:"Callnote.AudioCapture", code:2, userInfo:[
-                    NSLocalizedDescriptionKey:"Разрешите Callnote запись экрана и системного аудио в настройках macOS, затем перезапустите приложение."
-                ])
-            }
             let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly:true)
             guard let display = content.displays.first else { throw NSError(domain:"Экран не найден",code:1) }
             let excluded = content.applications.filter { $0.bundleIdentifier == "com.callnote.desktop" }

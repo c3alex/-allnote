@@ -75,6 +75,18 @@ class SessionWorker(QThread):
             with (self.folder/'native.log').open('w') as log:
                 self.proc=subprocess.Popen([str(helper_path()),str(self.folder),self.mode],stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE,stderr=log,text=True,bufsize=1)
+                startup_complete = threading.Event()
+                process = self.proc
+
+                def startup_timeout():
+                    if not startup_complete.is_set() and process.poll() is None:
+                        if not self.stop_event.is_set():
+                            self.error('macOS не запустила захват за 20 секунд. Проверьте системный запрос доступа и повторите запись.')
+                        process.kill()
+
+                watchdog = threading.Timer(20, startup_timeout)
+                watchdog.daemon = True
+                watchdog.start()
                 def stop_monitor():
                     self.stop_event.wait()
                     try:self.proc.stdin.write('stop\n');self.proc.stdin.flush()
@@ -87,7 +99,8 @@ class SessionWorker(QThread):
                     if kind=='started':
                         self.started_at.emit(event['date'])
                         atomic_json(self.folder/'capture.json',{'start':event['date'],'mode':self.mode})
-                    elif kind=='ready':self.capture_ready.emit()
+                    elif kind=='ready':
+                        startup_complete.set();watchdog.cancel();self.capture_ready.emit()
                     elif kind=='level':self.level.emit(event['source'],float(event['peak']))
                     elif kind=='chunk':
                         self.chunks.append(event)
@@ -95,6 +108,7 @@ class SessionWorker(QThread):
                         pending.put(event)
                     elif kind=='error':self.error('Захват звука: '+event.get('message','Ошибка'));self.stop_event.set()
                 code=self.proc.wait()
+                watchdog.cancel()
                 if code and not self.had_error:self.error('Модуль захвата завершился с ошибкой. Подробности в папке записи.')
         except Exception as exc:self.error(str(exc))
         finally:
