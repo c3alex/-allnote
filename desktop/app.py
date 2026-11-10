@@ -1,4 +1,4 @@
-"""Callnote 0.2.3 — macOS desktop recorder and local transcription."""
+"""Callnote 0.2.4 — macOS desktop recorder and local transcription."""
 import time
 PYTHON_ENTRY_NS = time.perf_counter_ns()
 import json
@@ -145,7 +145,7 @@ class Window(QMainWindow):
         sidebar=QWidget();sidebar.setFixedWidth(185);sidebar.setStyleSheet('background:#edf1e9');nav=QVBoxLayout(sidebar);nav.setContentsMargins(20,30,20,22);nav.setSpacing(14)
         brand=QLabel('≋ callnote.');brand.setStyleSheet('font-size:24px;font-weight:700');nav.addWidget(brand);nav.addSpacing(22)
         self.meeting_button=button('Текущая встреча',self.show_main);nav.addWidget(self.meeting_button);self.models_button=button('Модели',self.models);nav.addWidget(self.models_button)
-        self.keys_button=button('Горячие клавиши',self.shortcuts);nav.addWidget(self.keys_button);self.audio_button=button('Доступ к звуку',self.permissions);nav.addWidget(self.audio_button);nav.addStretch();nav.addWidget(note('Локальное распознавание\nАудио остаётся на Mac\nВерсия 0.2.3'))
+        self.keys_button=button('Горячие клавиши',self.shortcuts);nav.addWidget(self.keys_button);self.audio_button=button('Доступ к звуку',self.permissions);nav.addWidget(self.audio_button);nav.addStretch();nav.addWidget(note('Локальное распознавание\nАудио остаётся на Mac\nВерсия 0.2.4'))
         outer.addWidget(sidebar);body=QWidget();layout=QVBoxLayout(body);layout.setContentsMargins(28,28,28,20);layout.setSpacing(16);self.pages=QStackedWidget();self.pages.addWidget(body);outer.addWidget(self.pages,1);self.meeting_page=body;self.shortcut_page=None;self.audio_page=None
         row=QHBoxLayout();layout.addLayout(row);heading=QLabel('Разговор становится текстом.');heading.setStyleSheet('font-size:25px;font-weight:650');row.addWidget(heading);row.addStretch();row.addWidget(button('↗ Компактное окно',self.show_floating))
         self.file_label=note('Новая встреча · выберите источник и локальную модель');layout.addWidget(self.file_label)
@@ -249,7 +249,7 @@ class Window(QMainWindow):
             self.select_page(self.audio_page,self.audio_button);return
         page=QWidget();self.audio_page=page;layout=QVBoxLayout(page);layout.setContentsMargins(28,28,28,24);layout.setSpacing(18)
         title=QLabel('Доступ к звуку');title.setStyleSheet('font-size:24px;font-weight:600');layout.addWidget(title)
-        layout.addWidget(note('Для системного звука macOS запрашивает доступ к записи экрана/системного аудио. Для вашего голоса нужен отдельный доступ к микрофону. Запрос появится при старте записи. После изменения доступа может потребоваться перезапуск Callnote.'))
+        layout.addWidget(note('Для системного звука macOS запрашивает доступ к записи системного аудио. Для вашего голоса нужен отдельный доступ к микрофону. Запрос появится при старте записи. После изменения доступа может потребоваться перезапуск Callnote.'))
         for title,url in [('Открыть доступ к системному звуку','x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture'),('Открыть доступ к микрофону','x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone')]:
             layout.addWidget(button(title,lambda checked=False,u=url:QDesktopServices.openUrl(QUrl(u))))
         layout.addWidget(note('Разрешения меняются в системных настройках macOS. При смене устройства проверьте индикаторы; при пропадании сигнала остановите и начните запись заново.'))

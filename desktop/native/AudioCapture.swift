@@ -1,5 +1,5 @@
 import Foundation
-import ScreenCaptureKit
+import CoreAudio
 import AVFoundation
 import CoreMedia
 import CoreGraphics
@@ -51,10 +51,12 @@ final class Track {
     }
 }
 
-@available(macOS 13.0, *)
-final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
+final class Recorder {
     let queue = DispatchQueue(label: "callnote.capture.disk")
-    var stream: SCStream?
+    private var tap: AudioObjectID = 0
+    private var device: AudioObjectID = 0
+    private var io: AudioDeviceIOProcID?
+    private var systemStarted = false
     var engine: AVAudioEngine?
     var tracks: [String:Track] = [:]
     var origin = CMClockGetTime(CMClockGetHostTimeClock()).seconds
@@ -91,44 +93,60 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
             }
         } catch { fail(error.localizedDescription) }
     }
-    func stream(_ stream: SCStream, didStopWithError error: Error) { queue.async { self.fail(error.localizedDescription) } }
-    func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
-        guard type == .audio, sampleBuffer.isValid,
-              let desc = sampleBuffer.formatDescription else { return }
-        let format = AVAudioFormat(cmAudioFormatDescription:desc)
-        let size = MemoryLayout<AudioBufferList>.size + Int(format.channelCount) * MemoryLayout<AudioBuffer>.size
-        let pointer = UnsafeMutableRawPointer.allocate(byteCount:size, alignment:MemoryLayout<AudioBufferList>.alignment)
-        defer { pointer.deallocate() }
-        let list = pointer.bindMemory(to:AudioBufferList.self, capacity:1)
-        var block: CMBlockBuffer?
-        let status = CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(sampleBuffer, bufferListSizeNeededOut:nil,
-            bufferListOut:list, bufferListSize:size, blockBufferAllocator:kCFAllocatorDefault,
-            blockBufferMemoryAllocator:kCFAllocatorDefault, flags:0, blockBufferOut:&block)
-        guard status == noErr, let pcm = AVAudioPCMBuffer(pcmFormat:format, bufferListNoCopy:list) else { return }
-        pcm.frameLength = AVAudioFrameCount(CMSampleBufferGetNumSamples(sampleBuffer))
-        consume(pcm, source:"system", time:sampleBuffer.presentationTimeStamp.seconds)
+    private func check(_ status: OSStatus, _ operation: String) throws {
+        guard status == noErr else {
+            throw NSError(domain:"Callnote.CoreAudio", code:Int(status), userInfo:[
+                NSLocalizedDescriptionKey:"Системный звук: \(operation) (Core Audio \(status))."
+            ])
+        }
     }
+
+    private func startSystemAudio() throws {
+        let description = CATapDescription(stereoGlobalTapButExcludeProcesses: [])
+        description.name = "Callnote System Audio"
+        description.isPrivate = true
+        description.muteBehavior = .unmuted
+        try check(AudioHardwareCreateProcessTap(description, &tap), "создание источника")
+        var address = AudioObjectPropertyAddress(mSelector:kAudioTapPropertyFormat,
+            mScope:kAudioObjectPropertyScopeGlobal, mElement:kAudioObjectPropertyElementMain)
+        var asbd = AudioStreamBasicDescription()
+        var size = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+        try check(AudioObjectGetPropertyData(tap, &address, 0, nil, &size, &asbd), "чтение формата")
+        guard let format = AVAudioFormat(streamDescription:&asbd), asbd.mBytesPerFrame > 0 else {
+            throw NSError(domain:"Callnote.CoreAudio", code:1, userInfo:[NSLocalizedDescriptionKey:"Формат системного звука не поддерживается."])
+        }
+        let properties: [String:Any] = [
+            kAudioAggregateDeviceNameKey: "Callnote Capture",
+            kAudioAggregateDeviceUIDKey: UUID().uuidString,
+            kAudioAggregateDeviceIsPrivateKey: true,
+            kAudioAggregateDeviceTapAutoStartKey: true,
+            kAudioAggregateDeviceTapListKey: [[
+                kAudioSubTapUIDKey: description.uuid.uuidString,
+                kAudioSubTapDriftCompensationKey: true
+            ]]
+        ]
+        try check(AudioHardwareCreateAggregateDevice(properties as CFDictionary, &device), "создание устройства захвата")
+        let bytesPerFrame = Int(asbd.mBytesPerFrame)
+        try check(AudioDeviceCreateIOProcIDWithBlock(&io, device, queue) { [weak self] _, input, timestamp, _, _ in
+            let buffers = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating:input))
+            guard let first = buffers.first, first.mDataByteSize > 0,
+                  let pcm = AVAudioPCMBuffer(pcmFormat:format, bufferListNoCopy:input) else { return }
+            pcm.frameLength = AVAudioFrameCount(Int(first.mDataByteSize) / bytesPerFrame)
+            let time = AVAudioTime.seconds(forHostTime:timestamp.pointee.mHostTime)
+            self?.consume(pcm, source:"system", time:time)
+        }, "подключение входа")
+        try check(AudioDeviceStart(device, io), "запуск устройства захвата")
+        systemStarted = true
+    }
+
     func start(mode: String) async throws {
         if mode != "system" {
             let granted = await AVCaptureDevice.requestAccess(for:.audio)
             if !granted { throw NSError(domain:"Callnote.AudioCapture", code:1, userInfo:[NSLocalizedDescriptionKey:"Нет доступа к микрофону. Разрешите Callnote доступ в настройках macOS."]) }
         }
-        if mode != "mic" {
-            let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly:true)
-            guard let display = content.displays.first else { throw NSError(domain:"Экран не найден",code:1) }
-            let excluded = content.applications.filter { $0.bundleIdentifier == "com.callnote.desktop" }
-            let filter = SCContentFilter(display:display, excludingApplications:excluded, exceptingWindows:[])
-            let config = SCStreamConfiguration()
-            config.capturesAudio = true; config.excludesCurrentProcessAudio = true
-            config.sampleRate = 48000; config.channelCount = 2
-            config.width = 2; config.height = 2; config.minimumFrameInterval = CMTime(value:1,timescale:1)
-            let capture = SCStream(filter:filter, configuration:config, delegate:self)
-            try capture.addStreamOutput(self, type:.audio, sampleHandlerQueue:queue)
-            self.stream = capture
-        }
         origin = CMClockGetTime(CMClockGetHostTimeClock()).seconds
         emit(["event":"started", "date":ISO8601DateFormatter().string(from:Date()), "mode":mode])
-        if let stream = stream { try await stream.startCapture() }
+        if mode != "mic" { try startSystemAudio() }
         if mode != "system" {
             let engine = AVAudioEngine(); self.engine = engine
             let input = engine.inputNode
@@ -148,7 +166,10 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
     }
     func stop() async {
         if let engine = engine { engine.inputNode.removeTap(onBus:0); engine.stop() }
-        try? await stream?.stopCapture()
+        if systemStarted { AudioDeviceStop(device, io) }
+        if let io = io { AudioDeviceDestroyIOProcID(device, io) }
+        if device != 0 { AudioHardwareDestroyAggregateDevice(device) }
+        if tap != 0 { AudioHardwareDestroyProcessTap(tap) }
         queue.sync {
             for track in tracks.values { do { try track.flush() } catch { fail(error.localizedDescription) } }
         }

@@ -20,9 +20,9 @@ if sys.platform=='darwin':
     import plistlib
     bundle=root.parent/'dist'/'Callnote.app';path=bundle/'Contents'/'Info.plist'
     data=plistlib.loads(path.read_bytes())
-    data.update(CFBundleShortVersionString='0.2.3',CFBundleVersion='5',LSMinimumSystemVersion='14.4',
+    data.update(CFBundleShortVersionString='0.2.4',CFBundleVersion='6',LSMinimumSystemVersion='14.4',
         NSMicrophoneUsageDescription='Callnote записывает ваш голос для локальной расшифровки встречи.',
-        NSScreenCaptureUsageDescription='Callnote записывает системный звук звонков и приложений для локальной расшифровки.')
+        NSAudioCaptureUsageDescription='Callnote записывает системный звук звонков и приложений для локальной расшифровки.')
     path.write_bytes(plistlib.dumps(data))
     subprocess.run(['codesign','--force','--deep','--sign','-',str(bundle)],check=True)
     # Treat first rendered frame, not a living process, as successful startup.
