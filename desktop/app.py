@@ -1,4 +1,4 @@
-"""Callnote 0.2.1 — macOS desktop recorder and local transcription."""
+"""Callnote 0.2.2 — macOS desktop recorder and local transcription."""
 import time
 PYTHON_ENTRY_NS = time.perf_counter_ns()
 import json
@@ -145,7 +145,7 @@ class Window(QMainWindow):
         sidebar=QWidget();sidebar.setFixedWidth(185);sidebar.setStyleSheet('background:#edf1e9');nav=QVBoxLayout(sidebar);nav.setContentsMargins(20,30,20,22);nav.setSpacing(14)
         brand=QLabel('≋ callnote.');brand.setStyleSheet('font-size:24px;font-weight:700');nav.addWidget(brand);nav.addSpacing(22)
         self.meeting_button=button('Текущая встреча',self.show_main);nav.addWidget(self.meeting_button);self.models_button=button('Модели',self.models);nav.addWidget(self.models_button)
-        self.keys_button=button('Горячие клавиши',self.shortcuts);nav.addWidget(self.keys_button);self.audio_button=button('Доступ к звуку',self.permissions);nav.addWidget(self.audio_button);nav.addStretch();nav.addWidget(note('Локальное распознавание\nАудио остаётся на Mac\nВерсия 0.2.1'))
+        self.keys_button=button('Горячие клавиши',self.shortcuts);nav.addWidget(self.keys_button);self.audio_button=button('Доступ к звуку',self.permissions);nav.addWidget(self.audio_button);nav.addStretch();nav.addWidget(note('Локальное распознавание\nАудио остаётся на Mac\nВерсия 0.2.2'))
         outer.addWidget(sidebar);body=QWidget();layout=QVBoxLayout(body);layout.setContentsMargins(28,28,28,20);layout.setSpacing(16);self.pages=QStackedWidget();self.pages.addWidget(body);outer.addWidget(self.pages,1);self.meeting_page=body;self.shortcut_page=None;self.audio_page=None
         row=QHBoxLayout();layout.addLayout(row);heading=QLabel('Разговор становится текстом.');heading.setStyleSheet('font-size:25px;font-weight:650');row.addWidget(heading);row.addStretch();row.addWidget(button('↗ Компактное окно',self.show_floating))
         self.file_label=note('Новая встреча · выберите источник и локальную модель');layout.addWidget(self.file_label)
@@ -317,7 +317,15 @@ class Window(QMainWindow):
     def recording_ready(self,path,folder):self.set_audio(path);self.session_folder=Path(folder);self.dirty=True;self.save_recovery()
     def finished(self):
         self.busy(False);self.record_started=None
-        if not self.worker.had_error:self.status.setText('Готово. Текст и имена можно редактировать; проект сохранён автоматически.');self.mini.state.setText('Готово')
+        if not self.worker.had_error:
+            if self.worker.cancel_event.is_set():
+                message = 'Обработка отменена.'
+            elif not self.rows:
+                message = 'Речь не распознана. Проверьте звук и выбранный язык.'
+            else:
+                message = 'Готово. Текст и имена можно редактировать; проект сохранён автоматически.'
+            self.status.setText(message)
+            self.mini.state.setText('Готово' if self.rows else message)
         self.dirty=True;self.save_recovery()
     def tick(self):
         if self.record_started:self.mini.clock.setText(stamp((datetime.now().astimezone()-self.record_started).total_seconds()))
