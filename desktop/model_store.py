@@ -7,7 +7,45 @@ from urllib.parse import urlparse
 from core import app_data
 REQUIRED={'model.bin','config.json','tokenizer.json'}
 FILES=REQUIRED|{'vocabulary.json','vocabulary.txt','preprocessor_config.json','README.md','LICENSE','LICENSE.txt'}
-CATALOG=[('Whisper Tiny','Systran/faster-whisper-tiny'),('Whisper Base','Systran/faster-whisper-base'),('Whisper Small','Systran/faster-whisper-small')]
+# Bundled snapshot of the SYSTRAN collection, available before the Hub replies.
+CATALOG = {
+    'Systran/faster-' + name: likes for name, likes in (
+        ('whisper-tiny', 36), ('whisper-base', 55), ('whisper-small', 90),
+        ('whisper-medium', 79), ('whisper-large-v1', 3), ('whisper-large-v2', 49),
+        ('whisper-large-v3', 712), ('whisper-tiny.en', 10), ('whisper-base.en', 9),
+        ('whisper-small.en', 26), ('whisper-medium.en', 4),
+        ('distil-whisper-small.en', 3), ('distil-whisper-medium.en', 4),
+        ('distil-whisper-large-v2', 21), ('distil-whisper-large-v3', 71),
+    )
+}
+
+def model_card(repo, likes=None, languages=(), license_name=''):
+    publisher, name = repo.split('/', 1)
+    known = repo in CATALOG
+    if known:
+        english_only = name.endswith('.en') or 'distil-whisper' in name
+        languages = ('en',) if english_only else ('ru', 'en', 'другие')
+    descriptions = {
+        'tiny': 'Лёгкая модель для быстрой черновой расшифровки.',
+        'base': 'Баланс скорости и качества для повседневных записей.',
+        'small': 'Более крупная модель для расшифровки разговоров.',
+        'medium': 'Модель среднего размера. Требует больше памяти.',
+        'large': 'Крупная модель. На CPU обработка может занять больше времени.',
+    }
+    tier = name.split('whisper-', 1)[-1].split('-')[0].split('.')[0]
+    description = descriptions.get(tier, 'Модель распознавания речи в формате CTranslate2.') if known else 'Модель распознавания речи в формате CTranslate2.'
+    if known and 'distil-whisper' in name:
+        description = 'Уменьшенная англоязычная версия Whisper для быстрого распознавания.'
+    return dict(repo=repo, title=name.removeprefix('faster-').replace('-', ' ').title(),
+                publisher=publisher, developer=('Hugging Face · Distil-Whisper' if 'distil-whisper' in name else 'OpenAI') if known else publisher,
+                description=description, likes=likes, languages=list(languages), license=license_name)
+
+
+def local_repo(path):
+    try:
+        return repo_id(json.loads((path / 'callnote-model.json').read_text())['repo'])
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return None
 
 def repo_id(value):
     value=value.strip()
@@ -30,7 +68,7 @@ def validate_model(path):
 
 def installed():
     folder=app_data()/'Models';folder.mkdir(exist_ok=True)
-    return sorted([p for p in folder.iterdir() if p.is_dir() and not p.name.startswith('.') and all((p/n).is_file() for n in REQUIRED)])
+    return sorted([p for p in folder.iterdir() if p.is_dir() and not p.is_symlink() and not p.name.startswith('.') and all((p/n).is_file() for n in REQUIRED)])
 
 def sha256(path):
     digest=hashlib.sha256()

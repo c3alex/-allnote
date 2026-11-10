@@ -3,14 +3,16 @@ import hashlib
 import json
 from pathlib import Path
 import shutil
+import re
 import socket
 import ssl
 import sys
 import time
 import urllib.error
 import urllib.request
+from urllib.parse import urlparse
 from core import app_data,atomic_json
-from model_store import REQUIRED,FILES,repo_id,validate_model,sha256
+from model_store import REQUIRED,FILES,repo_id,validate_model,sha256,model_card
 
 TIMEOUT=12
 RETRIES=3
@@ -23,10 +25,46 @@ def open_url(request):
     import certifi
     return urllib.request.urlopen(request,timeout=TIMEOUT,context=ssl.create_default_context(cafile=certifi.where()))
 
+def catalog():
+    """Follow Hub pagination and keep public ASR repositories with installable files."""
+    url = ('https://huggingface.co/api/models?pipeline_tag=automatic-speech-recognition'
+           '&filter=ctranslate2&full=true&limit=100')
+    seen = set()
+    cards = {}
+    while url and url not in seen:
+        parsed = urlparse(url)
+        if parsed.scheme != 'https' or parsed.netloc != 'huggingface.co' or parsed.path != '/api/models':
+            raise ValueError('Некорректная ссылка на страницу каталога.')
+        seen.add(url)
+        emit('status', text=f'Обновление каталога Hugging Face · страница {len(seen)}')
+        with open_url(url) as response:
+            data = json.load(response)
+            link = response.headers.get('Link', '')
+        for item in data:
+            if item.get('private') or item.get('gated') or item.get('disabled'):
+                continue
+            files = {entry.get('rfilename') for entry in item.get('siblings', [])}
+            if not REQUIRED <= files:
+                continue
+            try:
+                repo = repo_id(item['id'])
+            except (KeyError, ValueError):
+                continue
+            tags = item.get('tags') or []
+            languages = [tag[9:] for tag in tags if tag.startswith('language:')]
+            # Hub may also return bare language codes.
+            languages += [tag for tag in tags if re.fullmatch(r'[a-z]{2,3}', tag) and tag not in ('asr', 'ct2')]
+            license_name = next((tag[8:] for tag in tags if tag.startswith('license:')), '')
+            cards[repo] = model_card(repo, item.get('likes'), dict.fromkeys(languages), license_name)
+        match = re.search(r'<([^>]+)>;\s*rel="next"', link)
+        url = match.group(1) if match else None
+    return {'catalog': list(cards.values())}
+
+
 def inspect(value):
     repo=repo_id(value)
     emit('status',text='Подключение к Hugging Face…')
-    request=urllib.request.Request('https://huggingface.co/api/models/'+repo+'?blobs=true',headers={'User-Agent':'Callnote/0.2.1'})
+    request=urllib.request.Request('https://huggingface.co/api/models/'+repo+'?blobs=true',headers={'User-Agent':'Callnote/0.2.5'})
     with open_url(request) as response:
         raw=response.read(4*1024*1024+1)
         if len(raw)>4*1024*1024:raise ValueError('Слишком большой ответ каталога')
@@ -51,7 +89,7 @@ def transfer(url,target,size,expected_hash=None,progress=lambda n:None,opener=op
         if received>size:partial.unlink();received=0
         try:
             if received<size:
-                headers={'User-Agent':'Callnote/0.2.1','Accept-Encoding':'identity'}
+                headers={'User-Agent':'Callnote/0.2.5','Accept-Encoding':'identity'}
                 if received:headers['Range']=f'bytes={received}-'
                 with opener(urllib.request.Request(url,headers=headers)) as response:
                     status=response.getcode()
@@ -134,7 +172,8 @@ def main(request_path):
         args=json.loads(Path(request_path).read_text())
         op=args['operation']
         if op=='inspect':result=inspect(args['value'])
-        elif op=='download':result=download(args['metadata'])
+        elif op=='download':result=download(args['metadata'] or inspect(args['value']))
+        elif op=='catalog':result=catalog()
         elif op in ('import','export'):result=copy_model(op,args['value'],args.get('destination'))
         else:raise ValueError('Неизвестная операция')
         emit('result',data=result);return 0

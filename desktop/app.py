@@ -1,4 +1,4 @@
-"""Callnote 0.2.4 — macOS desktop recorder and local transcription."""
+"""Callnote 0.2.5 — macOS desktop recorder and local transcription."""
 import time
 PYTHON_ENTRY_NS = time.perf_counter_ns()
 import json
@@ -12,15 +12,16 @@ if __name__ == '__main__' and len(sys.argv) == 3 and sys.argv[1] == '--model-job
     from model_job import main as run_model_job
     sys.exit(run_model_job(sys.argv[2]))
 from datetime import datetime
-from PySide6.QtCore import Qt,QTimer,QDateTime,QUrl,QSignalBlocker
+from PySide6.QtCore import Qt,QTimer,QDateTime,QUrl,QSignalBlocker,QFile
 from PySide6.QtGui import QColor,QDesktopServices,QKeySequence
 from PySide6.QtWidgets import (QApplication,QMainWindow,QWidget,QDialog,QVBoxLayout,QHBoxLayout,
     QGridLayout,QPushButton,QLabel,QComboBox,QFileDialog,QMessageBox,QTableWidget,QTableWidgetItem,
-    QHeaderView,QSlider,QCheckBox,QDateTimeEdit,QTextEdit,QLineEdit,QProgressBar,QListWidget,
-    QListWidgetItem,QKeySequenceEdit,QSplitter,QFrame,QStackedWidget)
+    QHeaderView,QSlider,QCheckBox,QDateTimeEdit,QTextEdit,QLineEdit,QProgressBar,
+    QKeySequenceEdit,QSplitter,QFrame,QStackedWidget,QScrollArea)
 from core import app_data,atomic_json,stamp,export_text,validate_project
 from engine import SessionWorker,helper_path
-from models import ModelTask,CATALOG,installed
+from models import ModelTask
+from model_store import CATALOG, installed, local_repo, model_card
 from hotkeys import Hotkeys,DEFAULTS
 
 STYLE='''
@@ -44,81 +45,286 @@ def note(text):
     label=QLabel(text);label.setWordWrap(True);label.setStyleSheet('color:#788675;font-size:11px');return label
 
 class ModelPage(QWidget):
-    def __init__(self,parent):
-        super().__init__(parent);self.owner=parent;self.task=None;self.metadata=None;self.last_request=None
-        layout=QVBoxLayout(self);layout.setContentsMargins(28,28,28,24);layout.setSpacing(14)
-        title=QLabel('Модели под вашу задачу');title.setStyleSheet('font-size:23px;font-weight:600');layout.addWidget(title)
-        layout.addWidget(note('Многоязычные Whisper в формате CTranslate2. После загрузки работают без интернета.'))
-        row=QHBoxLayout();layout.addLayout(row)
-        self.catalog=QComboBox()
-        for name,repo in CATALOG:self.catalog.addItem(name,repo)
-        self.catalog.currentIndexChanged.connect(lambda:self.repo.setText(self.catalog.currentData()))
-        row.addWidget(self.catalog);self.repo=QLineEdit(CATALOG[0][1]);self.repo.setPlaceholderText('https://huggingface.co/автор/модель');row.addWidget(self.repo,1)
-        self.repo.textChanged.connect(self.invalidate)
-        controls=QHBoxLayout();layout.addLayout(controls)
-        self.inspect=button('Проверить модель',self.inspect_model);controls.addWidget(self.inspect)
-        self.download=button('Скачать',self.download_model,True);self.download.setEnabled(False);controls.addWidget(self.download)
-        self.cancel=button('Отменить',self.cancel_task);self.cancel.setEnabled(False);controls.addWidget(self.cancel)
-        self.retry=button('Повторить',self.retry_task);self.retry.setEnabled(False);controls.addWidget(self.retry)
-        self.info=note('Проверка покажет размер, лицензию и совместимость файлов.');layout.addWidget(self.info)
-        self.progress=QProgressBar();self.progress.setRange(0,100);layout.addWidget(self.progress)
-        layout.addWidget(QLabel('Установленные модели'));self.list=QListWidget();layout.addWidget(self.list)
-        row=QHBoxLayout();layout.addLayout(row)
-        self.import_button=button('Импорт папки',self.import_model);row.addWidget(self.import_button)
-        self.export_button=button('Экспорт папки',self.export_model);row.addWidget(self.export_button)
-        self.choose=button('Использовать',self.use_model,True);row.addWidget(self.choose)
-        layout.addWidget(note('Файлы моделей не исполняются. Произвольные GGUF и PyTorch требуют другого адаптера. Во время загрузки можно переходить между разделами. Отмена сохраняет скачанную часть.'))
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.owner = parent
+        self.task = None
+        self.last_request = None
+        self.confirm_path = None
+        self.visible_limit = 30
+        self.cards = {repo: model_card(repo, likes) for repo, likes in CATALOG.items()}
+        self.cache = app_data() / 'model-catalog.json'
+        try:
+            cached = json.loads(self.cache.read_text())
+            self.cards.update({card['repo']: card for card in cached})
+        except (OSError, ValueError, TypeError, KeyError):
+            pass
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(28, 22, 28, 20)
+        title = QLabel('Модели')
+        title.setStyleSheet('font-size:24px;font-weight:650')
+        layout.addWidget(title)
+        layout.addWidget(note('Модели Hugging Face для локальной расшифровки. ♥ — отметки «Нравится».'))
+        toolbar = QHBoxLayout()
+        layout.addLayout(toolbar)
+        self.filter = QComboBox()
+        self.filter.addItems(['Все модели', 'На диске'])
+        toolbar.addWidget(self.filter)
+        self.search = QLineEdit()
+        self.search.setPlaceholderText('Поиск по названию, издателю или языку')
+        toolbar.addWidget(self.search, 1)
+        self.update_button = button('Обновить каталог', self.update_catalog)
+        toolbar.addWidget(self.update_button)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        body = QWidget()
+        self.results = QVBoxLayout(body)
+        self.results.setContentsMargins(0, 0, 6, 0)
+        self.results.setAlignment(Qt.AlignTop)
+        scroll.setWidget(body)
+        layout.addWidget(scroll, 1)
+        self.filter.currentIndexChanged.connect(self.reset_results)
+        self.search.textChanged.connect(self.reset_results)
+
+        custom = QHBoxLayout()
+        layout.addLayout(custom)
+        self.repo = QLineEdit()
+        self.repo.setPlaceholderText('Другая модель: owner/model или ссылка Hugging Face')
+        custom.addWidget(self.repo, 1)
+        self.custom_install = button('Установить по ссылке', self.install_custom)
+        self.import_button = button('Импорт папки', self.import_model)
+        custom.addWidget(self.custom_install)
+        custom.addWidget(self.import_button)
+
+        self.info = note('Каталог доступен сразу. Данные Hugging Face обновляются в фоне.')
+        layout.addWidget(self.info)
+        self.progress = QProgressBar()
+        layout.addWidget(self.progress)
+        self.progress.hide()
+        controls = QHBoxLayout()
+        layout.addLayout(controls)
+        self.cancel = button('Отменить', self.cancel_task)
+        self.retry = button('Повторить', self.retry_task)
+        controls.addWidget(self.cancel)
+        controls.addWidget(self.retry)
+        controls.addStretch()
+        self.cancel.hide()
+        self.retry.hide()
         self.refresh()
+        QTimer.singleShot(0, self.update_catalog)
+
+    def busy(self):
+        return self.task is not None and self.task.isRunning()
+
+    def reset_results(self):
+        self.visible_limit = 30
+        self.refresh()
+
+    def show_more(self):
+        self.visible_limit += 30
+        self.refresh()
+
     def refresh(self):
-        self.list.clear()
-        for path in installed():
-            item=QListWidgetItem(path.name);item.setData(Qt.UserRole,str(path));self.list.addItem(item)
-        if self.list.count():self.list.setCurrentRow(0)
-    def invalidate(self):
-        self.metadata=None;self.last_request=None;self.download.setEnabled(False)
-        if hasattr(self,'retry'):self.retry.setEnabled(False)
-    def launch(self,task):
-        if self.task and self.task.isRunning():return
-        if self.task:self.task.deleteLater()
-        self.task=task;self.last_request=(task.operation,task.value,task.destination,task.metadata)
-        self.progress.setRange(0,0) if task.operation=='inspect' else self.progress.setRange(0,100)
-        self.progress.setValue(0);self.retry.setEnabled(False)
-        for control in [self.inspect,self.download,self.import_button,self.export_button,self.choose,self.repo,self.catalog]:control.setEnabled(False)
-        self.cancel.setEnabled(True);task.status.connect(self.info.setText);task.progress.connect(self.progress.setValue)
-        task.result.connect(self.result);task.failed.connect(self.failure);task.finished.connect(self.finished);task.start()
-    def inspect_model(self):self.info.setText('Проверка репозитория…');self.launch(ModelTask('inspect',self.repo.text(),parent=self))
-    def download_model(self):
-        if self.metadata:self.launch(ModelTask('download',self.repo.text(),metadata=self.metadata,parent=self))
-    def import_model(self):
-        path=QFileDialog.getExistingDirectory(self,'Папка модели CTranslate2')
-        if path:self.launch(ModelTask('import',path,parent=self))
-    def export_model(self):
-        item=self.list.currentItem()
-        if not item:return
-        path=QFileDialog.getExistingDirectory(self,'Куда скопировать модель')
-        if path:self.launch(ModelTask('export',item.data(Qt.UserRole),destination=path,parent=self))
-    def use_model(self):
-        item=self.list.currentItem()
-        if item:self.owner.refresh_models(item.data(Qt.UserRole));self.owner.show_main()
-    def result(self,data):
-        if 'repo' in data:
-            self.metadata=data;self.info.setText(f"Совместимые файлы найдены · {data['size']/1024/1024:.0f} МБ · лицензия: {data['license']}\n{data['repo']}")
+        while self.results.count():
+            widget = self.results.takeAt(0).widget()
+            widget.hide()
+            widget.deleteLater()
+
+        paths = installed()
+        local_by_repo = {}
+        for path in paths:
+            repo = local_repo(path)
+            if repo:
+                local_by_repo.setdefault(repo, []).append(path)
+        entries = []
+        if self.filter.currentIndex() == 0:
+            entries.extend((card, local_by_repo.get(repo, [None])[-1])
+                           for repo, card in self.cards.items())
+            entries.extend((model_card(repo), local[-1]) for repo, local in local_by_repo.items()
+                           if repo not in self.cards)
+            entries.extend((None, path) for path in paths if not local_repo(path))
         else:
-            self.info.setText('Готово: '+Path(data['path']).name);self.refresh()
-            if self.task.operation!='export':self.owner.refresh_models(data['path'])
+            entries.extend((self.cards.get(repo) or model_card(repo) if repo else None, path)
+                           for path in paths for repo in [local_repo(path)])
+
+        query = self.search.text().strip().casefold()
+        matches = []
+        for card, path in entries:
+            if card:
+                searchable = ' '.join([card['title'], card['repo'], card['publisher'], *card['languages']])
+                if 'ru' in card['languages']:
+                    searchable += ' русский'
+                if 'en' in card['languages']:
+                    searchable += ' английский'
+            else:
+                searchable = path.name
+            if query in searchable.casefold():
+                matches.append((card, path))
+        for card, path in matches[:self.visible_limit]:
+            self.add_card(card, path)
+        if len(matches) > self.visible_limit:
+            self.results.addWidget(button(
+                f'Показать ещё · {self.visible_limit} из {len(matches)}', self.show_more))
+        if not matches:
+            self.results.addWidget(note('Подходящих моделей нет.'))
+        for control in (self.update_button, self.custom_install, self.import_button):
+            control.setEnabled(not self.busy())
+
+    def add_card(self, card, path):
+        frame = QFrame()
+        frame.setStyleSheet('QFrame{background:white;border:1px solid #dce4d8;border-radius:9px}')
+        layout = QVBoxLayout(frame)
+        name = QLabel(card['title'] if card else path.name)
+        name.setTextFormat(Qt.PlainText)
+        name.setWordWrap(True)
+        name.setStyleSheet('font-size:16px;font-weight:650')
+        layout.addWidget(name)
+        if card:
+            languages = ', '.join({'ru': 'русский', 'en': 'английский'}.get(code, code)
+                                  for code in card['languages']) or 'не указаны'
+            likes = card['likes'] if card['likes'] is not None else '—'
+            details = note(f"{card['repo']} · ♥ {likes}\n{card['description']}\n"
+                           f"Разработчик: {card['developer']} · Издатель: {card['publisher']}\n"
+                           f"Языки: {languages}" + (f" · {card['license']}" if card.get('license') else ''))
+            details.setTextFormat(Qt.PlainText)
+            layout.addWidget(details)
+        status = 'Установлена' if path else 'Доступна'
+        if path:
+            try:
+                size = sum(file.stat().st_size for file in path.iterdir() if file.is_file())
+                status += f' · {size / 1_000_000:.0f} МБ на диске'
+            except OSError:
+                pass
+        layout.addWidget(note(status))
+        row = QHBoxLayout()
+        layout.addLayout(row)
+        if path == self.confirm_path and path is not None:
+            row.addWidget(note('Переместить локальную копию в корзину?'))
+            row.addWidget(button('В корзину', lambda: self.remove(path)))
+            row.addWidget(button('Оставить', lambda: self.confirm_removal(None)))
+        elif path:
+            row.addWidget(button('Использовать', lambda: self.use(path), True))
+            row.addWidget(button('Экспорт', lambda: self.export_model(path)))
+            row.addWidget(button('Удалить с диска', lambda: self.confirm_removal(path)))
+        else:
+            row.addWidget(button('Установить', lambda: self.install(card['repo']), True))
+        for i in range(row.count()):
+            widget = row.itemAt(i).widget()
+            if isinstance(widget, QPushButton):
+                widget.setEnabled(not self.busy())
+        row.addStretch()
+        if card:
+            row.addWidget(button('Hugging Face ↗', lambda: QDesktopServices.openUrl(
+                QUrl('https://huggingface.co/' + card['repo']))))
+        self.results.addWidget(frame)
+
+    def confirm_removal(self, path):
+        self.confirm_path = path
+        self.refresh()
+
+    def remove(self, path):
+        if self.busy() or self.owner.active:
+            self.info.setText('Завершите запись или операцию с моделями перед удалением.')
+            return
+        if path not in installed():
+            self.info.setText('Локальная копия уже отсутствует.')
+        else:
+            file = QFile(str(path))
+            if not file.moveToTrash():
+                self.info.setText('Не удалось переместить модель в корзину: ' + file.errorString())
+                return
+            self.owner.refresh_models()
+            self.owner.save_settings()
+            self.info.setText('Локальная копия перемещена в корзину.')
+        self.confirm_removal(None)
+
+    def use(self, path):
+        self.owner.refresh_models(str(path))
+        self.owner.save_settings()
+        self.owner.show_main()
+
+    def launch(self, operation, value='', destination=None):
+        if self.busy():
+            return
+        if self.task:
+            self.task.deleteLater()
+        self.last_request = (operation, value, destination)
+        task = ModelTask(operation, value, destination=destination, parent=self)
+        self.task = task
+        self.retry.hide()
+        self.cancel.show()
+        self.progress.show()
+        self.progress.setRange(0, 0)
+        self.info.setText('Подготовка…')
+        task.status.connect(self.info.setText)
+        task.progress.connect(self.show_progress)
+        task.result.connect(self.result)
+        task.failed.connect(self.failure)
+        task.finished.connect(self.finished)
+        task.start()
+        self.refresh()
+
+    def show_progress(self, value):
+        self.progress.setRange(0, 100)
+        self.progress.setValue(value)
+
+    def update_catalog(self):
+        self.launch('catalog')
+
+    def install(self, repo):
+        self.launch('download', repo)
+
+    def install_custom(self):
+        self.install(self.repo.text())
+
+    def import_model(self):
+        path = QFileDialog.getExistingDirectory(self, 'Папка модели CTranslate2')
+        if path:
+            self.launch('import', path)
+
+    def export_model(self, source):
+        path = QFileDialog.getExistingDirectory(self, 'Куда скопировать модель')
+        if path:
+            self.launch('export', str(source), path)
+
+    def result(self, data):
+        if 'catalog' in data:
+            cards = data['catalog']
+            self.cards = {repo: model_card(repo, likes) for repo, likes in CATALOG.items()}
+            self.cards.update({card['repo']: card for card in cards})
+            try:
+                atomic_json(self.cache, cards)
+            except OSError:
+                pass
+            self.info.setText(f'Каталог обновлён · {len(self.cards)} моделей')
+        else:
+            self.info.setText('Готово: ' + Path(data['path']).name)
+            if self.task.operation != 'export':
+                self.owner.refresh_models(data['path'])
+                self.owner.save_settings()
+
     def finished(self):
-        self.progress.setRange(0,100)
-        for control in [self.inspect,self.import_button,self.export_button,self.choose,self.repo,self.catalog]:control.setEnabled(True)
-        self.download.setEnabled(self.metadata is not None);self.cancel.setEnabled(False)
-    def failure(self,text):
-        self.info.setText(text);self.retry.setEnabled(True)
+        self.progress.hide()
+        self.cancel.hide()
+        self.refresh()
+
+    def failure(self, text):
+        if self.task.operation == 'catalog':
+            text += ' Показан сохранённый каталог.'
+        self.info.setText(text)
+        self.retry.show()
+
     def retry_task(self):
         if self.last_request:
-            op,value,destination,metadata=self.last_request
-            self.info.setText('Повторная попытка…')
-            self.launch(ModelTask(op,value,destination=destination,metadata=metadata,parent=self))
+            self.launch(*self.last_request)
+
     def cancel_task(self):
-        if self.task:self.task.cancel()
+        if self.task:
+            self.task.cancel()
+
 
 class FloatingWindow(QWidget):
     def __init__(self,owner):
@@ -145,7 +351,7 @@ class Window(QMainWindow):
         sidebar=QWidget();sidebar.setFixedWidth(185);sidebar.setStyleSheet('background:#edf1e9');nav=QVBoxLayout(sidebar);nav.setContentsMargins(20,30,20,22);nav.setSpacing(14)
         brand=QLabel('≋ callnote.');brand.setStyleSheet('font-size:24px;font-weight:700');nav.addWidget(brand);nav.addSpacing(22)
         self.meeting_button=button('Текущая встреча',self.show_main);nav.addWidget(self.meeting_button);self.models_button=button('Модели',self.models);nav.addWidget(self.models_button)
-        self.keys_button=button('Горячие клавиши',self.shortcuts);nav.addWidget(self.keys_button);self.audio_button=button('Доступ к звуку',self.permissions);nav.addWidget(self.audio_button);nav.addStretch();nav.addWidget(note('Локальное распознавание\nАудио остаётся на Mac\nВерсия 0.2.4'))
+        self.keys_button=button('Горячие клавиши',self.shortcuts);nav.addWidget(self.keys_button);self.audio_button=button('Доступ к звуку',self.permissions);nav.addWidget(self.audio_button);nav.addStretch();nav.addWidget(note('Локальное распознавание\nАудио остаётся на Mac\nВерсия 0.2.5'))
         outer.addWidget(sidebar);body=QWidget();layout=QVBoxLayout(body);layout.setContentsMargins(28,28,28,20);layout.setSpacing(16);self.pages=QStackedWidget();self.pages.addWidget(body);outer.addWidget(self.pages,1);self.meeting_page=body;self.shortcut_page=None;self.audio_page=None
         row=QHBoxLayout();layout.addLayout(row);heading=QLabel('Разговор становится текстом.');heading.setStyleSheet('font-size:25px;font-weight:650');row.addWidget(heading);row.addStretch();row.addWidget(button('↗ Компактное окно',self.show_floating))
         self.file_label=note('Новая встреча · выберите источник и локальную модель');layout.addWidget(self.file_label)
@@ -281,7 +487,7 @@ class Window(QMainWindow):
         else:self.status.setText('Сначала откройте аудиофайл.')
     def begin(self,path):
         if self.active:return
-        if self.model_page and self.model_page.task and self.model_page.task.isRunning():self.status.setText('Дождитесь загрузки модели.');return
+        if self.model_page and self.model_page.busy() and self.model_page.task.operation != 'catalog':self.status.setText('Дождитесь загрузки модели.');return
         model=self.model.currentData()
         if not model:self.models();return
         if self.rows and QMessageBox.question(self,'Новая расшифровка','Заменить текущую расшифровку? Сохраните проект, если хотите вернуться к нему.',QMessageBox.Yes|QMessageBox.No)!=QMessageBox.Yes:return
